@@ -14,6 +14,8 @@ metadata:
         - pattern: "post to linkedin"
         - pattern: "share on linkedin"
         - pattern: "linkedin post"
+        - pattern: "post to linkedin org"
+        - pattern: "linkedin company post"
 ---
 
 # LinkedIn Poster

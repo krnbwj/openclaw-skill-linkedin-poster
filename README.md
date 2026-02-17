@@ -1,6 +1,6 @@
-# OpenClaw LinkedIn Poster Skill
+# OpenClaw LinkedIn Poster Skill (v1.1.0)
 
-🚀 **Post to LinkedIn directly from OpenClaw via a simple chat command.**
+🚀 **Post to LinkedIn (Personal & Company Pages) directly from OpenClaw via a simple chat command.**
 
 This skill integrates OpenClaw with LinkedIn's API using OAuth 2.0. Once you authorize it (a one-time setup), you can post updates to your profile by simply chatting with your bot.
 
@@ -26,7 +26,10 @@ This skill integrates OpenClaw with LinkedIn's API using OAuth 2.0. Once you aut
 1. Go to [LinkedIn Developers](https://www.linkedin.com/developers/apps) and create a new app.
 2. In the **Auth** tab, add this Redirect URL:
    `https://linkedin-oauth-server-production.up.railway.app/callback`
-3. In the **Products** tab, request access to **"Share on LinkedIn"** and **"Sign In with LinkedIn"**.
+3. In the **Products** tab, request access to:
+   - **"Share on LinkedIn"** (for personal profile posting)
+   - **"Sign In with LinkedIn"** (for authentication)
+   - **"Marketing API"** or **"Share on LinkedIn & Organization Page Management"** (REQUIRED for --org / Company Page posting)
 4. Copy your **Client ID** and **Client Secret**.
 
 ### 2. Configure OpenClaw
@@ -48,8 +51,10 @@ The first time you try to post, the skill will generate an extensive authorizati
 Just tell your bot to post!
 > "Post to LinkedIn: Just launched my new OpenClaw skill! 🦞"
 
-To post to your company page (where you are an admin):
+**To post to a company page:**
 > "Post to LinkedIn org 'Acme Corp': We are hiring!"
+
+(The skill will automatically find the best matching organization you administer)
 
 ### CLI Usage
 You can also run it directly:
