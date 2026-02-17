@@ -6,16 +6,34 @@ const { exec } = require('child_process');
 const TOKEN_FILE = path.join(__dirname, '.linkedin_token');
 const CALLBACK_SERVER = 'https://linkedin-oauth-server-production.up.railway.app';
 const REDIRECT_URI = `${CALLBACK_SERVER}/callback`;
-const SCOPE = 'openid profile w_member_social';
+// Scopes for both personal and organization posting
+const SCOPE = 'openid profile w_member_social w_organization_social r_organization_social';
 
 if (!process.env.LINKEDIN_CLIENT_ID || !process.env.LINKEDIN_CLIENT_SECRET) {
     console.error("Error: LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET environment variables are required.");
     process.exit(1);
 }
 
-const textToPost = process.argv[2];
+// --- Argument Parsing ---
+const args = process.argv.slice(2);
+const orgFlagIndex = args.indexOf('--org');
+let textToPost = "";
+let targetOrgName = null;
+
+if (orgFlagIndex !== -1) {
+    if (orgFlagIndex + 1 < args.length) {
+        targetOrgName = args[orgFlagIndex + 1];
+        // Remove the flag and value from args to reconstruct text
+        args.splice(orgFlagIndex, 2);
+    } else {
+        console.error("Error: --org flag provided but no company name specified.");
+        process.exit(1);
+    }
+}
+textToPost = args.join(" ");
+
 if (!textToPost) {
-    console.error("Usage: node runner.js <text_to_post>");
+    console.error("Usage: node runner.cjs <text_to_post> [--org <company_name>]");
     process.exit(1);
 }
 
@@ -28,17 +46,18 @@ async function main() {
     }
 
     try {
-        await postToLinkedIn(accessToken, textToPost);
+        await postToLinkedIn(accessToken, textToPost, targetOrgName);
     } catch (error) {
+        // Handle token expiry by retrying once
         if (error.message.includes('401') || error.message.includes('403')) {
             console.log("\nToken expired or invalid. Restarting OAuth flow...");
             if (fs.existsSync(TOKEN_FILE)) {
                 fs.unlinkSync(TOKEN_FILE);
             }
             accessToken = await startOAuthFlow();
-            await postToLinkedIn(accessToken, textToPost);
+            await postToLinkedIn(accessToken, textToPost, targetOrgName);
         } else {
-            console.error("Failed to post:", error);
+            console.error("Failed to post:", error.message);
             process.exit(1);
         }
     }
@@ -78,13 +97,11 @@ async function startOAuthFlow() {
     console.log(authUrl);
     console.log("\nOpening browser...");
     
-    // Try to open the URL automatically
     const startCmd = process.platform == 'darwin' ? 'open' : process.platform == 'win32' ? 'start' : 'xdg-open';
     exec(`${startCmd} "${authUrl}"`);
 
     console.log("\nWaiting for authorization (this may take a few seconds)...");
     
-    // Poll the callback server for the authorization code
     let code = null;
     for (let i = 0; i < 60; i++) { // Wait up to 60 seconds
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -107,7 +124,6 @@ async function startOAuthFlow() {
 
     console.log("\n✅ Authorization received! Exchanging for access token...");
     
-    // Exchange code for token
     const tokenData = await exchangeCodeForToken(code);
     saveToken(tokenData);
     return tokenData.access_token;
@@ -135,30 +151,76 @@ async function exchangeCodeForToken(code) {
     return await response.json();
 }
 
-async function postToLinkedIn(accessToken, text) {
-    // 1. Get User URN
-    const profileResponse = await fetch('https://api.linkedin.com/v2/userinfo', {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-    });
+async function findOrganizationUrn(accessToken, orgName) {
+    console.log(`\nSearching for organization: "${orgName}"...`);
     
-    let urn;
-    if (profileResponse.ok) {
-        const profile = await profileResponse.json();
-        urn = `urn:li:person:${profile.sub}`; 
-    } else {
-        const meResponse = await fetch('https://api.linkedin.com/v2/me', {
-            headers: { 'Authorization': `Bearer ${accessToken}` }
-        });
-        if (!meResponse.ok) {
-            throw new Error("Failed to fetch user profile/URN");
+    // Fetch organizations where user is an admin
+    const url = 'https://api.linkedin.com/v2/organizationalEntityAcls?q=roleAssignee&role=ADMINISTRATOR&state=APPROVED&projection=(elements*(organizationalTarget~(name)))';
+    
+    const response = await fetch(url, {
+        headers: { 
+            'Authorization': `Bearer ${accessToken}`, 
+            'X-Restli-Protocol-Version': '2.0.0' 
         }
-        const meData = await meResponse.json();
-        urn = `urn:li:person:${meData.id}`;
+    });
+
+    if (!response.ok) {
+        const txt = await response.text();
+        throw new Error(`Failed to fetch organizations: ${response.status} ${txt}`);
     }
 
-    console.log(`\nPosting as ${urn}...`);
+    const data = await response.json();
+    if (!data.elements || data.elements.length === 0) {
+        throw new Error("No administered organizations found for this user.");
+    }
 
-    // 2. Post Share
+    const normalizedTarget = orgName.toLowerCase().trim();
+    
+    // Try to find a match
+    for (const el of data.elements) {
+        const orgInfo = el['organizationalTarget~'];
+        const urn = el.organizationalTarget;
+        
+        if (orgInfo && orgInfo.name) {
+            if (orgInfo.name.toLowerCase().includes(normalizedTarget)) {
+                console.log(`✅ Found organization: ${orgInfo.name} (${urn})`);
+                return urn;
+            }
+        }
+    }
+
+    // List available if not found
+    const available = data.elements.map(e => e['organizationalTarget~']?.name).filter(Boolean).join(", ");
+    throw new Error(`Could not find an organization matching "${orgName}". Available: ${available}`);
+}
+
+async function postToLinkedIn(accessToken, text, orgName) {
+    let urn;
+
+    if (orgName) {
+        urn = await findOrganizationUrn(accessToken, orgName);
+    } else {
+        // Fallback to personal profile
+        const profileResponse = await fetch('https://api.linkedin.com/v2/userinfo', {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        
+        if (profileResponse.ok) {
+            const profile = await profileResponse.json();
+            urn = `urn:li:person:${profile.sub}`; 
+        } else {
+            // Legacy /me endpoint fallback
+            const meResponse = await fetch('https://api.linkedin.com/v2/me', {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+            if (!meResponse.ok) throw new Error("Failed to fetch user profile/URN");
+            const meData = await meResponse.json();
+            urn = `urn:li:person:${meData.id}`;
+        }
+    }
+
+    console.log(`\nPosting to ${urn}...`);
+
     const body = {
         author: urn,
         lifecycleState: "PUBLISHED",

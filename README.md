@@ -48,10 +48,17 @@ The first time you try to post, the skill will generate an extensive authorizati
 Just tell your bot to post!
 > "Post to LinkedIn: Just launched my new OpenClaw skill! 🦞"
 
+To post to your company page (where you are an admin):
+> "Post to LinkedIn org 'Acme Corp': We are hiring!"
+
 ### CLI Usage
 You can also run it directly:
 ```bash
+# Personal Profile
 node skills/linkedin-poster/runner.cjs "Your update text here"
+
+# Company Page
+node skills/linkedin-poster/runner.cjs "Company Update" --org "Acme Corp"
 ```
 
 ## How It Works

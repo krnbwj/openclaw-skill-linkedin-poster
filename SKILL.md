@@ -78,6 +78,18 @@ share on linkedin: Excited to announce our new product launch!
 node skills/linkedin-poster/runner.cjs "Your message here"
 ```
 
+### Posting to a Company Page
+
+To post to a LinkedIn Company Page where you are an admin:
+
+```bash
+node skills/linkedin-poster/runner.cjs "Company update!" --org "My Company Name"
+```
+
+The skill will fuzzy search your administered organizations and post to the best match.
+
+**Note:** You must have the `w_organization_social` permission (Marketing API/Company Page Management) enabled in your LinkedIn App settings for this to work.
+
 ## How It Works
 
 1. **First use**: Opens browser → Authorize → Token saved
