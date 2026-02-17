@@ -6,8 +6,9 @@ const { exec } = require('child_process');
 const TOKEN_FILE = path.join(__dirname, '.linkedin_token');
 const CALLBACK_SERVER = 'https://linkedin-oauth-server-production.up.railway.app';
 const REDIRECT_URI = `${CALLBACK_SERVER}/callback`;
-// Scopes for both personal and organization posting
-const SCOPE = 'openid profile w_member_social w_organization_social r_organization_social';
+
+const SCOPE_PERSONAL = 'openid profile w_member_social';
+const SCOPE_ORG = 'openid profile w_member_social w_organization_social r_organization_social';
 
 if (!process.env.LINKEDIN_CLIENT_ID || !process.env.LINKEDIN_CLIENT_SECRET) {
     console.error("Error: LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET environment variables are required.");
@@ -40,21 +41,26 @@ if (!textToPost) {
 async function main() {
     let accessToken = loadToken();
 
+    // If no token or if we need new scopes (simplest check is just to re-auth if org is requested but not in scope, 
+    // but here we just re-auth if token is missing or invalid.
+    // For now, let's assume if they ask for --org, they might need new permissions if the old token didn't have them.
+    // A robust way is to check token scopes, but we'll just try and fail/restart if needed.
+    
     if (!accessToken) {
         console.log("\n=== LinkedIn OAuth Required ===\n");
-        accessToken = await startOAuthFlow();
+        accessToken = await startOAuthFlow(!!targetOrgName);
     }
 
     try {
         await postToLinkedIn(accessToken, textToPost, targetOrgName);
     } catch (error) {
-        // Handle token expiry by retrying once
+        // Handle token expiry or permission issues by retrying once
         if (error.message.includes('401') || error.message.includes('403')) {
-            console.log("\nToken expired or invalid. Restarting OAuth flow...");
+            console.log("\nToken expired or invalid (or missing scopes). Restarting OAuth flow...");
             if (fs.existsSync(TOKEN_FILE)) {
                 fs.unlinkSync(TOKEN_FILE);
             }
-            accessToken = await startOAuthFlow();
+            accessToken = await startOAuthFlow(!!targetOrgName);
             await postToLinkedIn(accessToken, textToPost, targetOrgName);
         } else {
             console.error("Failed to post:", error.message);
@@ -89,10 +95,12 @@ function saveToken(tokenData) {
     console.log(`\nToken saved to ${TOKEN_FILE}`);
 }
 
-async function startOAuthFlow() {
+async function startOAuthFlow(useOrgScope = false) {
+    const scope = useOrgScope ? SCOPE_ORG : SCOPE_PERSONAL;
     const state = Date.now().toString();
-    const authUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${process.env.LINKEDIN_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPE)}&state=${state}`;
+    const authUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${process.env.LINKEDIN_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(scope)}&state=${state}`;
     
+    console.log(`\nRequesting permissions${useOrgScope ? ' (including Organization access)' : ' (Personal only)'}...`);
     console.log("\nPlease authorize the application by visiting this URL:\n");
     console.log(authUrl);
     console.log("\nOpening browser...");
@@ -154,7 +162,10 @@ async function exchangeCodeForToken(code) {
 async function findOrganizationUrn(accessToken, orgName) {
     console.log(`\nSearching for organization: "${orgName}"...`);
     
-    // Fetch organizations where user is an admin
+    // 1. Fetch organizations where user is an admin
+    // Note: The previous query parameter `q=roleAssignee` is correct for V2
+    // We request the list of organizations the user administers.
+    
     const url = 'https://api.linkedin.com/v2/organizationalEntityAcls?q=roleAssignee&role=ADMINISTRATOR&state=APPROVED&projection=(elements*(organizationalTarget~(name)))';
     
     const response = await fetch(url, {
@@ -175,18 +186,32 @@ async function findOrganizationUrn(accessToken, orgName) {
     }
 
     const normalizedTarget = orgName.toLowerCase().trim();
+    let bestMatch = null;
     
     // Try to find a match
     for (const el of data.elements) {
+        // The projection structure puts the name in 'organizationalTarget~'
         const orgInfo = el['organizationalTarget~'];
-        const urn = el.organizationalTarget;
+        const urn = el.organizationalTarget; // e.g., urn:li:organization:123456
         
         if (orgInfo && orgInfo.name) {
-            if (orgInfo.name.toLowerCase().includes(normalizedTarget)) {
-                console.log(`✅ Found organization: ${orgInfo.name} (${urn})`);
+            console.log(`Found admin access for: ${orgInfo.name} (${urn})`);
+            
+            // Exact match
+            if (orgInfo.name.toLowerCase() === normalizedTarget) {
                 return urn;
             }
+            
+            // Partial match
+            if (orgInfo.name.toLowerCase().includes(normalizedTarget)) {
+                bestMatch = urn;
+            }
         }
+    }
+
+    if (bestMatch) {
+        console.log(`Using partial match: ${bestMatch}`);
+        return bestMatch;
     }
 
     // List available if not found
